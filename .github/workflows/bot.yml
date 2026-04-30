@@ -1,19 +1,26 @@
-name: Запуск бота по расписанию
+name: Telegram Bot
 
 on:
   schedule:
-    - cron: '*/2 8-17 * * *'   # каждые 2 минуты с 8:00 до 17:58
-  workflow_dispatch:            # можно запустить вручную
+    - cron: '*/2 8-17 * * *'
+  workflow_dispatch:
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: pip install aiogram==3.17.0
-      - run: python bot.py
+      
+      - name: Install dependencies
+        run: pip install aiogram==3.17.0
+      
+      - name: Run bot
+        run: python bot.py
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
