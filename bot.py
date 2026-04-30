@@ -1,6 +1,8 @@
 import json
 import os
 import asyncio
+import signal
+import threading
 from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
@@ -125,8 +127,13 @@ async def show_my_bookings(message: types.Message):
     await message.answer("Твои записи:\n" + "\n".join(my_slots))
 
 async def main():
-    print("Бот запущен и работает")
+    print("✅ Бот запущен и работает")
     await dp.start_polling(bot)
 
+def auto_stop():
+    print("⏰ Через 4 минуты бот завершится")
+    threading.Timer(240, lambda: os.kill(os.getpid(), signal.SIGTERM)).start()
+
 if __name__ == "__main__":
+    auto_stop()
     asyncio.run(main())
