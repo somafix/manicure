@@ -125,7 +125,7 @@ async def show_my_bookings(message: types.Message):
     await message.answer("Твои записи:\n" + "\n".join(my_slots))
 
 async def main():
-    print("Бот запущен")
+    print("Бот запущен и работает")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
