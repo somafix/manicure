@@ -1,0 +1,34 @@
+name: Telegram Bot
+
+on:
+  schedule:
+    - cron: '*/5 8-17 * * *'   # каждые 5 минут с 8:00 до 17:55
+  workflow_dispatch:            # ручной запуск
+
+jobs:
+  bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4          # через 4 минуты прибить процесс (важно!)
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install aiogram==3.17.0
+      
+      - name: Run bot
+        run: |
+          python bot.py &
+          BOT_PID=$!
+          sleep 180
+          kill $BOT_PID || true
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
