@@ -1,8 +1,6 @@
 import json
 import os
 import asyncio
-import signal
-import threading
 from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
@@ -64,10 +62,10 @@ def get_time_buttons(date_str, free_slots):
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     if not is_working_time():
-        await message.answer(f"Бот работает с {START_HOUR}:00 до {END_HOUR}:00. Приходи завтра.")
+        await message.answer(f"⏰ Бот работает с {START_HOUR}:00 до {END_HOUR}:00")
         return
     await message.answer(
-        f"Запись на маникюр\nЧасы работы: {START_HOUR}:00 - {END_HOUR}:00\n\nНажми кнопку:",
+        f"💅 Запись на маникюр\n⏰ {START_HOUR}:00-{END_HOUR}:00",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="✍️ Записаться", callback_data="book")]
         ])
@@ -76,64 +74,51 @@ async def cmd_start(message: types.Message):
 @dp.callback_query(lambda c: c.data == "book")
 async def choose_date(callback: types.CallbackQuery):
     if not is_working_time():
-        await callback.answer("Нерабочее время", show_alert=True)
+        await callback.answer("❌ Нерабочее время")
         return
-    await callback.message.edit_text("Выбери дату:", reply_markup=get_date_buttons())
+    await callback.message.edit_text("📅 Выбери дату:", reply_markup=get_date_buttons())
     await callback.answer()
 
 @dp.callback_query(lambda c: c.data.startswith("date_"))
 async def choose_time(callback: types.CallbackQuery):
     if not is_working_time():
-        await callback.answer("Нерабочее время", show_alert=True)
+        await callback.answer("❌ Нерабочее время")
         return
     date_str = callback.data.split("_")[1]
     free_slots = get_free_slots(date_str)
     if not free_slots:
-        await callback.message.edit_text("На эту дату нет мест. Выбери другую:", reply_markup=get_date_buttons())
-        await callback.answer()
+        await callback.message.edit_text("❌ Нет мест", reply_markup=get_date_buttons())
         return
-    await callback.message.edit_text(f"Дата: {date_str}\nВыбери время:", reply_markup=get_time_buttons(date_str, free_slots))
+    await callback.message.edit_text(f"📅 {date_str}\n⏰ Время:", reply_markup=get_time_buttons(date_str, free_slots))
     await callback.answer()
 
 @dp.callback_query(lambda c: c.data.startswith("time_"))
 async def make_booking(callback: types.CallbackQuery):
     if not is_working_time():
-        await callback.answer("Нерабочее время", show_alert=True)
+        await callback.answer("❌ Нерабочее время")
         return
     _, date_str, slot_time = callback.data.split("_")
     full_slot = f"{date_str} {slot_time}"
     bookings = load_bookings()
     if full_slot in bookings:
-        await callback.answer("Это время уже занято", show_alert=True)
+        await callback.answer("❌ Занято")
         return
     bookings[full_slot] = {
         "user_id": callback.from_user.id,
-        "name": callback.from_user.full_name,
-        "username": callback.from_user.username or "без username"
+        "name": callback.from_user.full_name
     }
     save_bookings(bookings)
-    await callback.message.edit_text(f"✅ Ты записан на {full_slot}!\n\n/start - в главное меню")
+    await callback.message.edit_text(f"✅ Запись на {full_slot}\n/start - меню")
     await callback.answer()
 
-@dp.message(Command("my_bookings"))
-async def show_my_bookings(message: types.Message):
-    if not is_working_time():
-        return
-    bookings = load_bookings()
-    my_slots = [s for s, info in bookings.items() if info["user_id"] == message.from_user.id]
-    if not my_slots:
-        await message.answer("У тебя нет записей")
-        return
-    await message.answer("Твои записи:\n" + "\n".join(my_slots))
-
 async def main():
-    print("✅ Бот запущен и работает")
-    await dp.start_polling(bot)
-
-def auto_stop():
-    print("⏰ Через 4 минуты бот завершится")
-    threading.Timer(240, lambda: os.kill(os.getpid(), signal.SIGTERM)).start()
+    print("✅ Бот запущен")
+    # Получаем обновления и сразу завершаемся
+    updates = await bot.get_updates(offset=-1, timeout=5)
+    for update in updates:
+        await dp.process_update(update)
+    await bot.session.close()
+    print("✅ Бот завершил работу")
 
 if __name__ == "__main__":
-    auto_stop()
     asyncio.run(main())
