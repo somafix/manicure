@@ -1,9 +1,9 @@
-name: Telegram Bot
+name: Запуск бота по расписанию
 
 on:
   schedule:
-    - cron: '*/5 * * * *'  # проверка каждые 5 минут (бесплатно)
-  workflow_dispatch:  # возможность запустить вручную
+    - cron: '*/2 8-17 * * *'   # каждые 2 минуты с 8:00 до 17:58
+  workflow_dispatch:            # можно запустить вручную
 
 jobs:
   run-bot:
@@ -13,5 +13,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: pip install aiogram
+      - run: pip install aiogram==3.17.0
       - run: python bot.py
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
