@@ -8,7 +8,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 import asyncio
 
 # ========== НАСТРОЙКИ (ЭТО МЕНЯЕТ ТОЛЬКО МАСТЕР ЧЕРЕЗ КОМАНДЫ) ==========
-TOKEN = "ТВОЙ_ТОКЕН_ОТ_BOTFATHER"
+TOKEN = "8412337182:AAGidH2rnE4mmaTw0til8wiFM1qPbKGy2qU"
 MASTER_ID = None  # Заполнится автоматически, когда мастер напишет /start
 
 # Рабочие часы по умолчанию
