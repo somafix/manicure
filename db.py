@@ -1,5 +1,4 @@
 import sqlite3
-import json
 from datetime import datetime, timedelta
 
 DB_NAME = "bookings.db"
@@ -8,7 +7,6 @@ def init_db():
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     
-    # Таблица записей
     c.execute('''CREATE TABLE IF NOT EXISTS bookings (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         slot TEXT NOT NULL,
@@ -20,7 +18,6 @@ def init_db():
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )''')
     
-    # Таблица услуг
     c.execute('''CREATE TABLE IF NOT EXISTS services (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL,
@@ -28,13 +25,11 @@ def init_db():
         price INTEGER NOT NULL
     )''')
     
-    # Таблица настроек
     c.execute('''CREATE TABLE IF NOT EXISTS settings (
         key TEXT PRIMARY KEY,
         value TEXT
     )''')
     
-    # Добавляем тестовые услуги, если их нет
     c.execute("SELECT COUNT(*) FROM services")
     if c.fetchone()[0] == 0:
         services = [
@@ -64,7 +59,7 @@ def add_booking(slot, user_id, user_name, phone, service_id):
                   (slot, user_id, user_name, phone, service_id))
         conn.commit()
         return True
-    except sqlite3.IntegrityError:
+    except:
         return False
     finally:
         conn.close()
@@ -172,5 +167,4 @@ def set_setting(key, value):
     conn.commit()
     conn.close()
 
-# Инициализация БД при импорте
 init_db()
