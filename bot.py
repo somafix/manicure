@@ -1,10 +1,24 @@
+import subprocess
+import sys
+
+# Автоустановка зависимостей
+try:
+    from flask import Flask, request
+except ModuleNotFoundError:
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "flask"])
+    from flask import Flask, request
+
+try:
+    import requests
+except ModuleNotFoundError:
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "requests"])
+    import requests
+
 import json
 import os
 import threading
 import time
 from datetime import datetime, timedelta
-from flask import Flask, request
-import requests
 import db
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -15,8 +29,8 @@ URL = f"https://api.telegram.org/bot{TOKEN}"
 app = Flask(__name__)
 
 # Настройки рабочего времени
-START_HOUR = 9  # изменено с 8 на 9
-END_HOUR = 20   # изменено с 18 на 20
+START_HOUR = 9
+END_HOUR = 20
 LUNCH_START = 13
 LUNCH_END = 14
 
@@ -190,19 +204,18 @@ def reminder_worker():
     while True:
         try:
             now = datetime.now()
-            upcoming = db.get_upcoming_bookings(1)  # за час
+            upcoming = db.get_upcoming_bookings(1)
             for b in upcoming:
                 slot_time = datetime.strptime(b["slot"], "%Y-%m-%d %H:00")
                 diff = (slot_time - now).total_seconds() / 60
-                if 30 <= diff <= 70:  # примерно за час
+                if 30 <= diff <= 70:
                     text = f"🔔 <b>Напоминание!</b>\n\nУ тебя запись через час:\n📅 {b['slot']}\n💅 {b['service']}\n\nЖду тебя!"
                     send_message(b["user_id"], text)
                     db.mark_reminder_sent(b["id"])
         except Exception as e:
             print(f"Ошибка напоминаний: {e}")
-        time.sleep(600)  # каждые 10 минут
+        time.sleep(600)
 
-# Запускаем фоновый поток
 threading.Thread(target=reminder_worker, daemon=True).start()
 
 # ========== ОБРАБОТЧИКИ ==========
@@ -217,7 +230,6 @@ def webhook():
         chat_id = msg["chat"]["id"]
         text = msg.get("text", "")
 
-        # Обработка ввода числа для таймера отмены
         awaiting_deadline = db.get_setting("awaiting_deadline")
         if awaiting_deadline == str(chat_id) and text.isdigit():
             db.set_setting("cancellation_deadline_minutes", text)
@@ -253,7 +265,6 @@ def webhook():
         msg_id = call["message"]["message_id"]
         data_call = call["data"]
 
-        # Навигация
         if data_call == "back_to_main":
             edit_message(chat_id, msg_id, "💅 Главное меню:", main_keyboard())
             clear_user_temp(chat_id)
@@ -280,11 +291,9 @@ def webhook():
 📞 По всем вопросам: @admin"""
             edit_message(chat_id, msg_id, info_text, main_keyboard())
 
-        # Услуги
         elif data_call == "services_list":
             edit_message(chat_id, msg_id, "💅 <b>Выбери услугу:</b>", get_service_buttons())
 
-        # Запись
         elif data_call == "book":
             if not is_working_time():
                 edit_message(chat_id, msg_id, "⏰ Сейчас нерабочее время или обед (13:00-14:00)\nРаботаю с 9:00 до 20:00")
@@ -315,13 +324,11 @@ def webhook():
                     text += f"• {b['slot']} — {b['service']}\n   ({cancel_status})\n\n"
                 send_message(chat_id, text, get_cancel_buttons(chat_id))
 
-        # Выбор услуги
         elif data_call.startswith("service_"):
             service_id = int(data_call.split("_")[1])
             user_temp_data[chat_id] = {"service_id": service_id}
             edit_message(chat_id, msg_id, "📅 Теперь выбери дату:", get_date_buttons())
 
-        # Выбор даты
         elif data_call.startswith("date_"):
             date_str = data_call.split("_")[1]
             temp = user_temp_data.get(chat_id, {})
@@ -344,7 +351,6 @@ def webhook():
                 edit_message(chat_id, msg_id, f"📅 <b>{date_str}</b>\n💅 {service['name']} ({service['duration']} мин)\n\nВыбери время:", 
                            get_time_buttons(date_str, free, service_id))
 
-        # Выбор времени и запись
         elif data_call.startswith("time_"):
             parts = data_call.split("_")
             if len(parts) != 4:
@@ -358,7 +364,6 @@ def webhook():
             if not service:
                 return
             
-            # Проверяем, свободно ли время
             free = get_free_slots(date_str, service["duration"])
             if slot_time not in free:
                 edit_message(chat_id, msg_id, f"❌ Время {slot_time} уже занято. Выбери другое:")
@@ -374,14 +379,12 @@ def webhook():
                 clear_user_temp(chat_id)
                 confirm_text = f"✅ <b>Запись подтверждена!</b>\n\n📅 {full_slot}\n💅 {service['name']}\n💰 {service['price']}₽\n\nПриходите вовремя! ✨"
                 edit_message(chat_id, msg_id, confirm_text)
-                # Отправляем уведомление админу
                 admin_id = db.get_setting("admin_id")
                 if admin_id:
                     send_message(int(admin_id), f"📝 <b>Новая запись!</b>\n\n{full_name}\n📅 {full_slot}\n💅 {service['name']}")
             else:
                 edit_message(chat_id, msg_id, "❌ Ошибка: время уже занято")
 
-        # Отмена записи
         elif data_call.startswith("cancel_"):
             slot = data_call.replace("cancel_", "")
             if not db.can_cancel(slot):
@@ -389,14 +392,12 @@ def webhook():
             else:
                 if db.cancel_booking(slot, user_id=chat_id):
                     send_message(chat_id, f"✅ Запись на {slot} отменена")
-                    # Уведомляем админа
                     admin_id = db.get_setting("admin_id")
                     if admin_id:
                         send_message(int(admin_id), f"❌ Клиент отменил запись на {slot}")
                 else:
                     send_message(chat_id, "❌ Запись не найдена")
 
-        # Админские команды
         elif data_call == "all_bookings" and is_admin(chat_id):
             bookings = db.get_all_active_bookings()
             if not bookings:
