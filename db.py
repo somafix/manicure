@@ -33,10 +33,10 @@ def init_db():
     c.execute("SELECT COUNT(*) FROM services")
     if c.fetchone()[0] == 0:
         services = [
-            ("Маникюр", 60, 1000),
-            ("Педикюр", 90, 1500),
-            ("Маникюр + покрытие", 90, 2000),
-            ("Наращивание", 120, 3000),
+            ("Манікюр", 60, 300),
+            ("Педикюр", 90, 500),
+            ("Манікюр + покриття", 90, 450),
+            ("Наращування", 120, 800),
         ]
         c.executemany("INSERT INTO services (name, duration, price) VALUES (?, ?, ?)", services)
     
