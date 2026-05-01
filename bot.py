@@ -1,32 +1,210 @@
-import os
-import json
-import requests
-from datetime import datetime, timedelta
-import db
+#!/usr/bin/env python3
+# TELEGRAM БОТ ДЛЯ ЗАПИСИ НА МАНИКЮР
+# СОХРАНИ КАК bot.py, ЗАПУСТИ, ВСЁ РАБОТАЕТ
 
-TOKEN = os.getenv("TELEGRAM_TOKEN")
-if not TOKEN:
-    raise Exception("TELEGRAM_TOKEN не задан!")
+import os
+import sqlite3
+import json
+import time
+from datetime import datetime, timedelta
+import requests
+
+# ========== НАСТРОЙКИ (МЕНЯЙ ТУТ) ==========
+TOKEN = "сюда_свой_токен"           # Токен бота от @BotFather
+ADMIN_ID = 123456789                # Твой Telegram ID (узнать у @userinfobot)
+# ===========================================
 
 URL = f"https://api.telegram.org/bot{TOKEN}"
+DB_NAME = "manicure.db"
 
-WORK_START = 8
-WORK_END = 18
-LUNCH_START = 13
-LUNCH_END = 14
+# Рабочее время
+WORK_START = 9      # с 9 утра
+WORK_END = 20       # до 8 вечера
+STEP = 60           # шаг записи в минутах
 
-temp = {}
+# ========== БАЗА ДАННЫХ (ОДИН ФАЙЛ) ==========
+def init_db():
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS orders (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        date TEXT,
+        time TEXT,
+        name TEXT,
+        phone TEXT,
+        service TEXT,
+        user_id INTEGER,
+        created_at TEXT
+    )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS blocked (
+        date TEXT,
+        time TEXT,
+        PRIMARY KEY (date, time)
+    )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS last_id (
+        id INTEGER
+    )''')
+    c.execute("SELECT COUNT(*) FROM last_id")
+    if c.fetchone()[0] == 0:
+        c.execute("INSERT INTO last_id (id) VALUES (0)")
+    conn.commit()
+    conn.close()
 
-# ========== УТИЛИТЫ ==========
+def get_last_id():
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute("SELECT id FROM last_id")
+    row = c.fetchone()
+    conn.close()
+    return row[0] if row else 0
 
-def is_working_hour():
-    now = datetime.now()
-    if LUNCH_START <= now.hour < LUNCH_END:
-        return False
-    return WORK_START <= now.hour < WORK_END
+def set_last_id(uid):
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute("UPDATE last_id SET id = ?", (uid,))
+    conn.commit()
+    conn.close()
 
-def is_admin(user_id):
-    return str(user_id) == db.get_setting("admin_id")
+def add_order(date, time, name, phone, service, user_id):
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute("INSERT INTO orders (date, time, name, phone, service, user_id, created_at) VALUES (?,?,?,?,?,?,?)",
+              (date, time, name, phone, service, user_id, datetime.now().isoformat()))
+    conn.commit()
+    conn.close()
+
+def get_today_orders():
+    today = datetime.now().strftime("%Y-%m-%d")
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute("SELECT time, name, phone, service FROM orders WHERE date = ? ORDER BY time", (today,))
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
+def get_all_orders():
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute("SELECT date, time, name, phone, service FROM orders ORDER BY date, time")
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
+def cancel_order(date, time):
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute("DELETE FROM orders WHERE date = ? AND time = ?", (date, time))
+    deleted = c.rowcount
+    conn.commit()
+    conn.close()
+    return deleted > 0
+
+def is_time_blocked(date, time):
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute("SELECT 1 FROM blocked WHERE date = ? AND time = ?", (date, time))
+    row = c.fetchone()
+    conn.close()
+    return row is not None
+
+def is_time_booked(date, time):
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute("SELECT 1 FROM orders WHERE date = ? AND time = ?", (date, time))
+    row = c.fetchone()
+    conn.close()
+    return row is not None
+
+def get_free_slots(date):
+    free = []
+    hour = WORK_START
+    while hour < WORK_END:
+        time_str = f"{hour:02d}:00"
+        if not is_time_booked(date, time_str) and not is_time_blocked(date, time_str):
+            free.append(time_str)
+        hour += STEP // 60
+    return free
+
+# ========== КНОПКИ (КРАСИВЫЕ) ==========
+def main_menu():
+    return {
+        "inline_keyboard": [
+            [{"text": "💅 ЗАПИСАТЬСЯ", "callback_data": "book"}],
+            [{"text": "📋 МОИ ЗАПИСИ", "callback_data": "my_orders"}],
+            [{"text": "🕒 СВОБОДНЫЕ ОКНА", "callback_data": "free"}],
+            [{"text": "👸 АДМИН", "callback_data": "admin"}]
+        ]
+    }
+
+def date_buttons():
+    buttons = []
+    for i in range(5):
+        d = (datetime.now() + timedelta(days=i)).strftime("%Y-%m-%d")
+        day_name = ["СЕГОДНЯ", "ЗАВТРА", "ПОСЛЕЗАВТРА", f"+3 ДНЯ", f"+4 ДНЯ"][i]
+        buttons.append([{"text": f"📅 {day_name} {d}", "callback_data": f"date_{d}"}])
+    buttons.append([{"text": "◀️ НАЗАД", "callback_data": "back"}])
+    return {"inline_keyboard": buttons}
+
+def service_buttons():
+    return {
+        "inline_keyboard": [
+            [{"text": "💅 МАНИКЮР", "callback_data": "service_manicure"}],
+            [{"text": "🦶 ПЕДИКЮР", "callback_data": "service_pedicure"}],
+            [{"text": "✨ МАНИКЮР + ПЕДИКЮР", "callback_data": "service_both"}],
+            [{"text": "🎨 ПОКРЫТИЕ ГЕЛЬ-ЛАК", "callback_data": "service_gel"}],
+            [{"text": "◀️ НАЗАД", "callback_data": "back"}]
+        ]
+    }
+
+def time_buttons(date, slots):
+    buttons = []
+    for s in slots:
+        buttons.append([{"text": f"🕐 {s}", "callback_data": f"time_{date}_{s}"}])
+    buttons.append([{"text": "◀️ ДРУГАЯ ДАТА", "callback_data": "back_date"}])
+    return {"inline_keyboard": buttons}
+
+def confirm_buttons(date, time, service, name, phone):
+    return {
+        "inline_keyboard": [
+            [{"text": "✅ ПОДТВЕРДИТЬ", "callback_data": f"confirm_{date}_{time}_{service}_{name}_{phone}"}],
+            [{"text": "❌ ОТМЕНИТЬ", "callback_data": "back"}]
+        ]
+    }
+
+def admin_menu():
+    return {
+        "inline_keyboard": [
+            [{"text": "📋 СЕГОДНЯШНИЕ ЗАПИСИ", "callback_data": "admin_today"}],
+            [{"text": "📜 ВСЕ ЗАПИСИ", "callback_data": "admin_all"}],
+            [{"text": "❌ ОТМЕНИТЬ ЗАПИСЬ", "callback_data": "admin_cancel"}],
+            [{"text": "🚫 ЗАБЛОКИРОВАТЬ ВРЕМЯ", "callback_data": "admin_block"}],
+            [{"text": "◀️ НАЗАД", "callback_data": "back"}]
+        ]
+    }
+
+def cancel_select_buttons():
+    orders = get_all_orders()
+    if not orders:
+        return None
+    buttons = []
+    for date, time, name, phone, service in orders[:20]:
+        buttons.append([{"text": f"❌ {date} {time} — {name}", "callback_data": f"admin_del_{date}_{time}"}])
+    buttons.append([{"text": "◀️ НАЗАД", "callback_data": "admin"}])
+    return {"inline_keyboard": buttons}
+
+def block_buttons():
+    today = datetime.now().strftime("%Y-%m-%d")
+    free = get_free_slots(today)
+    if not free:
+        return None
+    buttons = []
+    for t in free[:12]:
+        buttons.append([{"text": f"🚫 ЗАБЛОКИРОВАТЬ {t}", "callback_data": f"admin_block_{today}_{t}"}])
+    buttons.append([{"text": "◀️ НАЗАД", "callback_data": "admin"}])
+    return {"inline_keyboard": buttons}
+
+# ========== ЛОГИКА БОТА ==========
+user_data = {}
 
 def send(chat_id, text, keyboard=None):
     data = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
@@ -37,294 +215,240 @@ def send(chat_id, text, keyboard=None):
     except:
         pass
 
-def get_free_slots(date, duration=60):
-    booked = [b["slot"] for b in db.get_all_active_bookings() if b["slot"].startswith(date)]
-    free = []
-    hour = WORK_START
+def handle_callback(chat_id, callback):
+    # НАЗАД
+    if callback == "back":
+        send(chat_id, "⭐️ ГЛАВНОЕ МЕНЮ ⭐️", main_menu())
+        user_data.pop(chat_id, None)
+        return
     
-    while hour + (duration // 60) <= WORK_END:
-        if LUNCH_START <= hour < LUNCH_END:
-            hour = LUNCH_END
-            continue
+    if callback == "back_date":
+        send(chat_id, "📅 ВЫБЕРИ ДАТУ", date_buttons())
+        return
+    
+    # ГЛАВНОЕ МЕНЮ
+    if callback == "book":
+        send(chat_id, "💅 ВЫБЕРИ УСЛУГУ", service_buttons())
+        return
+    
+    if callback == "my_orders":
+        orders = []
+        conn = sqlite3.connect(DB_NAME)
+        c = conn.cursor()
+        c.execute("SELECT date, time, service FROM orders WHERE user_id = ? ORDER BY date", (chat_id,))
+        orders = c.fetchall()
+        conn.close()
         
-        taken = False
-        for b in booked:
-            bh = int(b.split()[1].split(":")[0])
-            if abs(bh - hour) < (duration // 60):
-                taken = True
-                break
-        
-        if not taken:
-            free.append(f"{hour:02d}:00")
-        hour += 1
-    
-    return free
-
-# ========== КЛАВИАТУРЫ ==========
-
-MENU = {
-    "inline_keyboard": [
-        [{"text": "📅 Записаться", "callback_data": "book"}],
-        [{"text": "📋 Мои записи", "callback_data": "my"}],
-        [{"text": "🕒 Свободно", "callback_data": "free"}],
-        [{"text": "🔴 Занято", "callback_data": "busy"}],
-        [{"text": "🛠 Услуги", "callback_data": "services"}]
-    ]
-}
-
-def date_buttons():
-    buttons = []
-    for i in range(4):
-        d = (datetime.now() + timedelta(days=i)).strftime("%Y-%m-%d")
-        name = ["Сегодня", "Завтра", "Послезавтра", "+3 дня"][i]
-        buttons.append([{"text": f"📅 {name}", "callback_data": f"date_{d}"}])
-    buttons.append([{"text": "◀️ Назад", "callback_data": "back"}])
-    return {"inline_keyboard": buttons}
-
-def service_buttons():
-    buttons = [[{"text": f"{s['name']} ({s['duration']}мин)", "callback_data": f"service_{s['id']}"}] 
-               for s in db.get_services()]
-    buttons.append([{"text": "◀️ Назад", "callback_data": "back"}])
-    return {"inline_keyboard": buttons}
-
-def time_buttons(date, slots, service_id):
-    buttons = [[{"text": s, "callback_data": f"time_{date}_{s}_{service_id}"}] for s in slots]
-    buttons.append([{"text": "◀️ Назад", "callback_data": "back_date"}])
-    return {"inline_keyboard": buttons}
-
-def cancel_buttons(user_id):
-    buttons = []
-    for b in db.get_user_bookings(user_id):
-        if db.can_cancel(b["slot"]):
-            buttons.append([{"text": f"❌ {b['slot']}", "callback_data": f"cancel_{b['slot']}"}])
-    if buttons:
-        buttons.append([{"text": "◀️ Назад", "callback_data": "back"}])
-    return {"inline_keyboard": buttons}
-
-# ========== ОБРАБОТЧИКИ ==========
-
-def handle_message(chat_id, text):
-    if text == "/start":
-        send(chat_id, "💅 Маникюрный бот\n\nВыбери действие:", MENU)
-        if not db.get_setting("admin_id"):
-            db.set_setting("admin_id", str(chat_id))
-            send(chat_id, "👑 Ты администратор! Используй /admin для панели")
-    
-    elif text == "/admin":
-        if is_admin(chat_id):
-            admin_menu = {
-                "inline_keyboard": [
-                    [{"text": "📋 Все записи", "callback_data": "all_bookings"}],
-                    [{"text": "🍽 Обед (вкл/выкл)", "callback_data": "toggle_lunch"}],
-                    [{"text": "❌ Отменить запись", "callback_data": "admin_cancel"}],
-                    [{"text": "📊 Статистика", "callback_data": "stats"}],
-                    [{"text": "◀️ Назад", "callback_data": "back"}]
-                ]
-            }
-            send(chat_id, "🔧 Админ-панель", admin_menu)
+        if not orders:
+            send(chat_id, "📭 У ВАС НЕТ АКТИВНЫХ ЗАПИСЕЙ", main_menu())
         else:
-            send(chat_id, "⛔ У вас нет прав администратора")
-    
-    elif text == "/help":
-        send(chat_id, "Доступные команды:\n/start - Главное меню\n/admin - Админ-панель\n/help - Справка")
-
-def handle_callback(chat_id, data):
-    # Навигация
-    if data == "back":
-        send(chat_id, "💅 Главное меню:", MENU)
-        temp.pop(chat_id, None)
-        return
-    if data == "back_date":
-        send(chat_id, "📅 Выбери дату:", date_buttons())
+            text = "📋 <b>ВАШИ ЗАПИСИ:</b>\n\n"
+            for d, t, s in orders:
+                text += f"🗓 {d} {t}\n💅 {s}\n\n"
+            send(chat_id, text, main_menu())
         return
     
-    # ========== АДМИН-ПАНЕЛЬ ==========
-    if data == "all_bookings" and is_admin(chat_id):
-        bookings = db.get_all_active_bookings()
-        if not bookings:
-            send(chat_id, "📭 Нет записей")
-        else:
-            text = "📋 <b>ВСЕ ЗАПИСИ:</b>\n\n"
-            for b in bookings:
-                text += f"• {b['slot']} — {b['name']} ({b['service']})\n"
-            send(chat_id, text)
-        return
-    
-    if data == "stats" and is_admin(chat_id):
-        bookings = db.get_all_active_bookings()
-        today = datetime.now().strftime("%Y-%m-%d")
-        today_count = len([b for b in bookings if b["slot"].startswith(today)])
-        text = f"📊 <b>Статистика:</b>\n\nВсего записей: {len(bookings)}\nНа сегодня: {today_count}"
-        send(chat_id, text)
-        return
-    
-    if data == "toggle_lunch" and is_admin(chat_id):
-        current = db.get_setting("lunch_disabled", "False")
-        new = "True" if current == "False" else "False"
-        db.set_setting("lunch_disabled", new)
-        status = "❌ ВЫКЛЮЧЕН" if new == "True" else "✅ ВКЛЮЧЕН"
-        send(chat_id, f"🍽 Обед {status} (13:00-14:00)")
-        return
-    
-    if data == "admin_cancel" and is_admin(chat_id):
-        bookings = db.get_all_active_bookings()
-        if not bookings:
-            send(chat_id, "📭 Нет записей")
-            return
-        buttons = []
-        for b in bookings:
-            buttons.append([{"text": f"❌ {b['slot']} — {b['name']}", "callback_data": f"admin_cancel_{b['slot']}"}])
-        buttons.append([{"text": "◀️ Назад", "callback_data": "back"}])
-        send(chat_id, "❌ Выбери запись для отмены:", {"inline_keyboard": buttons})
-        return
-    
-    if data.startswith("admin_cancel_") and is_admin(chat_id):
-        slot = data.replace("admin_cancel_", "")
-        booking = db.get_booking_by_slot(slot)
-        if booking:
-            db.cancel_booking(slot, is_admin=True)
-            send(chat_id, f"✅ Отменена: {slot} — {booking['user_name']}")
-            send(booking["user_id"], f"❌ <b>Твоя запись на {slot} отменена администратором</b>")
-        return
-    # =====================================
-    
-    # Инфо
-    if data == "services":
-        send(chat_id, "💅 Услуги:", service_buttons())
-        return
-    
-    # Запись
-    if data == "book":
-        if is_working_hour():
-            send(chat_id, "📅 Выбери дату:", date_buttons())
-        else:
-            send(chat_id, "⏰ Работаю с 8:00 до 18:00, обед 13:00-14:00")
-        return
-    
-    if data == "free":
+    if callback == "free":
         today = datetime.now().strftime("%Y-%m-%d")
         free = get_free_slots(today)
-        text = f"🟢 Свободно сегодня ({today}):\n" + ("\n".join(free) if free else "Нет свободных часов")
-        send(chat_id, text)
-        return
-    
-    if data == "busy":
-        today = datetime.now().strftime("%Y-%m-%d")
-        busy = [b for b in db.get_all_active_bookings() if b["slot"].startswith(today)]
-        text = f"🔴 Занято сегодня ({today}):\n" + ("\n".join([f"{b['slot']} — {b['service']}" for b in busy]) if busy else "Нет записей")
-        send(chat_id, text)
-        return
-    
-    if data == "my":
-        bookings = db.get_user_bookings(chat_id)
-        if not bookings:
-            send(chat_id, "📭 Нет активных записей")
-        else:
-            text = "📋 Твои записи:\n\n"
-            for b in bookings:
-                status = "✅ можно отменить" if db.can_cancel(b["slot"]) else "⏰ отмена недоступна"
-                text += f"{b['slot']} — {b['service']}\n({status})\n\n"
-            send(chat_id, text, cancel_buttons(chat_id))
-        return
-    
-    # Выбор услуги
-    if data.startswith("service_"):
-        sid = int(data.split("_")[1])
-        temp[chat_id] = {"service_id": sid}
-        send(chat_id, "📅 Выбери дату:", date_buttons())
-        return
-    
-    # Выбор даты
-    if data.startswith("date_"):
-        date = data.split("_")[1]
-        if chat_id not in temp or "service_id" not in temp[chat_id]:
-            send(chat_id, "💅 Сначала выбери услугу:", service_buttons())
-            return
-        
-        sid = temp[chat_id]["service_id"]
-        service = next((s for s in db.get_services() if s["id"] == sid), None)
-        if not service:
-            return
-        
-        free = get_free_slots(date, service["duration"])
         if not free:
-            send(chat_id, f"❌ На {date} нет свободных окон под {service['duration']} мин")
+            send(chat_id, "⚠️ НА СЕГОДНЯ СВОБОДНЫХ ОКОН НЕТ", main_menu())
         else:
-            temp[chat_id]["date"] = date
-            send(chat_id, f"📅 {date}\n💅 {service['name']} ({service['duration']}мин)\n\nВыбери время:", 
-                 time_buttons(date, free, sid))
+            text = "🕒 <b>СВОБОДНО СЕГОДНЯ:</b>\n\n" + "\n".join(f"• {f}" for f in free)
+            send(chat_id, text, main_menu())
         return
     
-    # Выбор времени
-    if data.startswith("time_"):
-        parts = data.split("_")
-        if len(parts) != 4:
-            return
-        _, date, slot_time, sid = parts
-        sid = int(sid)
-        full_slot = f"{date} {slot_time}"
-        
-        service = next((s for s in db.get_services() if s["id"] == sid), None)
-        if not service:
-            return
-        
-        free = get_free_slots(date, service["duration"])
-        if slot_time not in free:
-            send(chat_id, f"❌ Время {slot_time} уже занято")
-            return
-        
-        name = f"Клиент"
-        if db.add_booking(full_slot, chat_id, name, "", sid):
-            temp.pop(chat_id, None)
-            send(chat_id, f"✅ Запись подтверждена!\n\n📅 {full_slot}\n💅 {service['name']}\n💰 {service['price']} грн")
-            admin = db.get_setting("admin_id")
-            if admin:
-                send(int(admin), f"📝 Новая запись!\n{full_slot}\n{service['name']}")
+    if callback == "admin":
+        if chat_id == ADMIN_ID:
+            send(chat_id, "👸 <b>АДМИН-ПАНЕЛЬ</b>", admin_menu())
         else:
-            send(chat_id, "❌ Ошибка: время уже занято")
+            send(chat_id, "⛔ ДОСТУП ЗАПРЕЩЕН", main_menu())
         return
     
-    # Отмена
-    if data.startswith("cancel_"):
-        slot = data.replace("cancel_", "")
-        if not db.can_cancel(slot):
-            send(chat_id, "⏰ Отменить можно за 2 часа до начала")
-        elif db.cancel_booking(slot, user_id=chat_id):
-            send(chat_id, f"✅ Запись на {slot} отменена")
+    # ВЫБОР УСЛУГИ
+    if callback.startswith("service_"):
+        service = callback.replace("service_", "").replace("_", " ").upper()
+        user_data[chat_id] = {"service": service}
+        send(chat_id, "📅 ВЫБЕРИ ДАТУ", date_buttons())
+        return
+    
+    # ВЫБОР ДАТЫ
+    if callback.startswith("date_"):
+        date = callback.replace("date_", "")
+        if chat_id not in user_data or "service" not in user_data[chat_id]:
+            send(chat_id, "⚠️ СНАЧАЛА ВЫБЕРИ УСЛУГУ", service_buttons())
+            return
+        
+        free = get_free_slots(date)
+        if not free:
+            send(chat_id, f"❌ НА {date} НЕТ СВОБОДНЫХ ОКОН\nВЫБЕРИ ДРУГУЮ ДАТУ", date_buttons())
+        else:
+            user_data[chat_id]["date"] = date
+            send(chat_id, f"📅 {date}\n💅 {user_data[chat_id]['service']}\n\nВЫБЕРИ ВРЕМЯ:", time_buttons(date, free))
+        return
+    
+    # ВЫБОР ВРЕМЕНИ
+    if callback.startswith("time_"):
+        parts = callback.split("_")
+        date = parts[1]
+        time_slot = parts[2]
+        
+        if is_time_booked(date, time_slot) or is_time_blocked(date, time_slot):
+            send(chat_id, "❌ ЭТО ВРЕМЯ УЖЕ ЗАНЯТО ИЛИ ЗАБЛОКИРОВАНО\nВЫБЕРИ ДРУГОЕ", date_buttons())
+            return
+        
+        user_data[chat_id]["order_date"] = date
+        user_data[chat_id]["order_time"] = time_slot
+        send(chat_id, "✏️ ВВЕДИТЕ ВАШЕ ИМЯ\n(как к вам обращаться)")
+        return
+    
+    # ПОДТВЕРЖДЕНИЕ
+    if callback.startswith("confirm_"):
+        parts = callback.split("_")
+        date = parts[1]
+        time_slot = parts[2]
+        service = parts[3]
+        name = parts[4]
+        phone = user_data.get(chat_id, {}).get("phone", "не указан")
+        
+        if is_time_booked(date, time_slot):
+            send(chat_id, "❌ ОШИБКА! ЭТО ВРЕМЯ УЖЕ ЗАНЯТО\nПОПРОБУЙТЕ СНОВА", main_menu())
+            return
+        
+        add_order(date, time_slot, name, phone, service, chat_id)
+        send(chat_id, f"✅ <b>ВЫ ЗАПИСАНЫ!</b>\n\n🗓 {date} {time_slot}\n💅 {service}\n👤 {name}\n\nЖДЕМ ВАС ❤️", main_menu())
+        
+        # Уведомление админу
+        send(ADMIN_ID, f"🆕 <b>НОВАЯ ЗАПИСЬ!</b>\n\n📅 {date} {time_slot}\n💅 {service}\n👤 {name}\n📞 {phone}")
+        user_data.pop(chat_id, None)
+        return
+    
+    # АДМИН: СЕГОДНЯ
+    if callback == "admin_today" and chat_id == ADMIN_ID:
+        orders = get_today_orders()
+        if not orders:
+            send(chat_id, "📭 НА СЕГОДНЯ ЗАПИСЕЙ НЕТ", admin_menu())
+        else:
+            text = "📋 <b>ЗАПИСИ НА СЕГОДНЯ:</b>\n\n"
+            for t, n, p, s in orders:
+                text += f"🕐 {t} | {n} | {s}\n📞 {p}\n\n"
+            send(chat_id, text, admin_menu())
+        return
+    
+    # АДМИН: ВСЕ ЗАПИСИ
+    if callback == "admin_all" and chat_id == ADMIN_ID:
+        orders = get_all_orders()
+        if not orders:
+            send(chat_id, "📭 ЗАПИСЕЙ НЕТ", admin_menu())
+        else:
+            text = "📜 <b>ВСЕ ЗАПИСИ:</b>\n\n"
+            for d, t, n, p, s in orders:
+                text += f"🗓 {d} {t}\n👤 {n} | {s}\n📞 {p}\n\n"
+                if len(text) > 3500:
+                    send(chat_id, text)
+                    text = ""
+            if text:
+                send(chat_id, text, admin_menu())
+        return
+    
+    # АДМИН: ОТМЕНИТЬ ЗАПИСЬ
+    if callback == "admin_cancel" and chat_id == ADMIN_ID:
+        kb = cancel_select_buttons()
+        if kb:
+            send(chat_id, "❌ ВЫБЕРИ ЗАПИСЬ ДЛЯ ОТМЕНЫ", kb)
+        else:
+            send(chat_id, "📭 НЕТ ЗАПИСЕЙ ДЛЯ ОТМЕНЫ", admin_menu())
+        return
+    
+    if callback.startswith("admin_del_") and chat_id == ADMIN_ID:
+        parts = callback.split("_")
+        date = parts[2]
+        time_slot = parts[3]
+        if cancel_order(date, time_slot):
+            send(chat_id, f"✅ ЗАПИСЬ НА {date} {time_slot} ОТМЕНЕНА", admin_menu())
+        else:
+            send(chat_id, "❌ НЕ УДАЛОСЬ ОТМЕНИТЬ", admin_menu())
+        return
+    
+    # АДМИН: ЗАБЛОКИРОВАТЬ ВРЕМЯ
+    if callback == "admin_block" and chat_id == ADMIN_ID:
+        kb = block_buttons()
+        if kb:
+            send(chat_id, "🚫 ВЫБЕРИ ВРЕМЯ ДЛЯ БЛОКИРОВКИ", kb)
+        else:
+            send(chat_id, "⚠️ НЕТ СВОБОДНЫХ ОКОН ДЛЯ БЛОКИРОВКИ", admin_menu())
+        return
+    
+    if callback.startswith("admin_block_") and chat_id == ADMIN_ID:
+        parts = callback.split("_")
+        date = parts[2]
+        time_slot = parts[3]
+        conn = sqlite3.connect(DB_NAME)
+        c = conn.cursor()
+        c.execute("INSERT OR REPLACE INTO blocked (date, time) VALUES (?,?)", (date, time_slot))
+        conn.commit()
+        conn.close()
+        send(chat_id, f"🚫 ВРЕМЯ {date} {time_slot} ЗАБЛОКИРОВАНО", admin_menu())
+        return
+
+def handle_message(chat_id, text):
+    # Если ждем имя
+    if chat_id in user_data and "order_date" in user_data[chat_id] and "order_time" in user_data[chat_id]:
+        user_data[chat_id]["name"] = text
+        send(chat_id, "📞 ВВЕДИТЕ ВАШ ТЕЛЕФОН\n(для связи)")
+        return
+    
+    # Если ждем телефон
+    if chat_id in user_data and "name" in user_data[chat_id] and "phone" not in user_data[chat_id]:
+        user_data[chat_id]["phone"] = text
+        order = user_data[chat_id]
+        send(chat_id, f"✅ <b>ПРОВЕРЬТЕ ДАННЫЕ:</b>\n\n🗓 {order['order_date']} {order['order_time']}\n💅 {order['service']}\n👤 {order['name']}\n📞 {text}\n\nВСЕ ВЕРНО?", 
+             confirm_buttons(order['order_date'], order['order_time'], order['service'], order['name'], text))
+        return
+    
+    # Команды
+    if text == "/start":
+        send(chat_id, "✨ <b>МАНИКЮР-БОТ</b> ✨\n\nЗапись на маникюр и педикюр\n\n👇 ВЫБЕРИТЕ ДЕЙСТВИЕ", main_menu())
+    else:
+        send(chat_id, "ИСПОЛЬЗУЙТЕ КНОПКИ МЕНЮ 👆", main_menu())
 
 # ========== ЗАПУСК ==========
-
 def main():
-    if not is_working_hour():
-        print(f"Нерабочее время {datetime.now()}")
-        return
+    init_db()
+    print(f"✅ БОТ ЗАПУЩЕН {datetime.now()}")
+    print(f"👸 АДМИН ID: {ADMIN_ID}")
     
-    print(f"Запуск {datetime.now()}")
-    last_id = int(db.get_setting("last_update_id", "0"))
+    last_id = get_last_id()
     
-    try:
-        resp = requests.get(f"{URL}/getUpdates", params={"offset": last_id + 1, "timeout": 30}, timeout=35)
-        data = resp.json()
-        
-        if not data.get("ok"):
-            return
-        
-        for update in data["result"]:
-            db.set_setting("last_update_id", str(update["update_id"]))
+    while True:
+        try:
+            resp = requests.get(f"{URL}/getUpdates", params={"offset": last_id + 1, "timeout": 30}, timeout=35)
+            data = resp.json()
             
-            if "message" in update:
-                msg = update["message"]
-                chat_id = msg["chat"]["id"]
-                text = msg.get("text", "")
-                handle_message(chat_id, text)
+            if data.get("ok"):
+                for update in data["result"]:
+                    last_id = update["update_id"]
+                    set_last_id(last_id)
+                    
+                    if "message" in update:
+                        msg = update["message"]
+                        chat_id = msg["chat"]["id"]
+                        text = msg.get("text", "")
+                        handle_message(chat_id, text)
+                    
+                    elif "callback_query" in update:
+                        cb = update["callback_query"]
+                        chat_id = cb["message"]["chat"]["id"]
+                        handle_callback(chat_id, cb["data"])
+                        
+                        # Ответ на callback (убирает часики)
+                        requests.post(f"{URL}/answerCallbackQuery", json={"callback_query_id": cb["id"]})
             
-            elif "callback_query" in update:
-                cb = update["callback_query"]
-                chat_id = cb["message"]["chat"]["id"]
-                handle_callback(chat_id, cb["data"])
-                
-    except Exception as e:
-        print(f"Ошибка: {e}")
+            time.sleep(0.5)
+            
+        except Exception as e:
+            print(f"Ошибка: {e}")
+            time.sleep(5)
 
 if __name__ == "__main__":
     main()
