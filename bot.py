@@ -15,6 +15,7 @@ WORK_END = 18
 LUNCH_START = 13
 LUNCH_END = 14
 
+temp = {}
 
 # ========== УТИЛИТЫ ==========
 
@@ -59,7 +60,6 @@ def get_free_slots(date, duration=60):
     
     return free
 
-
 # ========== КЛАВИАТУРЫ ==========
 
 MENU = {
@@ -101,17 +101,32 @@ def cancel_buttons(user_id):
         buttons.append([{"text": "◀️ Назад", "callback_data": "back"}])
     return {"inline_keyboard": buttons}
 
-
 # ========== ОБРАБОТЧИКИ ==========
-
-temp = {}
 
 def handle_message(chat_id, text):
     if text == "/start":
         send(chat_id, "💅 Маникюрный бот\n\nВыбери действие:", MENU)
         if not db.get_setting("admin_id"):
             db.set_setting("admin_id", str(chat_id))
-            send(chat_id, "👑 Ты администратор!")
+            send(chat_id, "👑 Ты администратор! Используй /admin для панели")
+    
+    elif text == "/admin":
+        if is_admin(chat_id):
+            admin_menu = {
+                "inline_keyboard": [
+                    [{"text": "📋 Все записи", "callback_data": "all_bookings"}],
+                    [{"text": "🍽 Обед (вкл/выкл)", "callback_data": "toggle_lunch"}],
+                    [{"text": "❌ Отменить запись", "callback_data": "admin_cancel"}],
+                    [{"text": "📊 Статистика", "callback_data": "stats"}],
+                    [{"text": "◀️ Назад", "callback_data": "back"}]
+                ]
+            }
+            send(chat_id, "🔧 Админ-панель", admin_menu)
+        else:
+            send(chat_id, "⛔ У вас нет прав администратора")
+    
+    elif text == "/help":
+        send(chat_id, "Доступные команды:\n/start - Главное меню\n/admin - Админ-панель\n/help - Справка")
 
 def handle_callback(chat_id, data):
     # Навигация
@@ -122,6 +137,56 @@ def handle_callback(chat_id, data):
     if data == "back_date":
         send(chat_id, "📅 Выбери дату:", date_buttons())
         return
+    
+    # ========== АДМИН-ПАНЕЛЬ ==========
+    if data == "all_bookings" and is_admin(chat_id):
+        bookings = db.get_all_active_bookings()
+        if not bookings:
+            send(chat_id, "📭 Нет записей")
+        else:
+            text = "📋 <b>ВСЕ ЗАПИСИ:</b>\n\n"
+            for b in bookings:
+                text += f"• {b['slot']} — {b['name']} ({b['service']})\n"
+            send(chat_id, text)
+        return
+    
+    if data == "stats" and is_admin(chat_id):
+        bookings = db.get_all_active_bookings()
+        today = datetime.now().strftime("%Y-%m-%d")
+        today_count = len([b for b in bookings if b["slot"].startswith(today)])
+        text = f"📊 <b>Статистика:</b>\n\nВсего записей: {len(bookings)}\nНа сегодня: {today_count}"
+        send(chat_id, text)
+        return
+    
+    if data == "toggle_lunch" and is_admin(chat_id):
+        current = db.get_setting("lunch_disabled", "False")
+        new = "True" if current == "False" else "False"
+        db.set_setting("lunch_disabled", new)
+        status = "❌ ВЫКЛЮЧЕН" if new == "True" else "✅ ВКЛЮЧЕН"
+        send(chat_id, f"🍽 Обед {status} (13:00-14:00)")
+        return
+    
+    if data == "admin_cancel" and is_admin(chat_id):
+        bookings = db.get_all_active_bookings()
+        if not bookings:
+            send(chat_id, "📭 Нет записей")
+            return
+        buttons = []
+        for b in bookings:
+            buttons.append([{"text": f"❌ {b['slot']} — {b['name']}", "callback_data": f"admin_cancel_{b['slot']}"}])
+        buttons.append([{"text": "◀️ Назад", "callback_data": "back"}])
+        send(chat_id, "❌ Выбери запись для отмены:", {"inline_keyboard": buttons})
+        return
+    
+    if data.startswith("admin_cancel_") and is_admin(chat_id):
+        slot = data.replace("admin_cancel_", "")
+        booking = db.get_booking_by_slot(slot)
+        if booking:
+            db.cancel_booking(slot, is_admin=True)
+            send(chat_id, f"✅ Отменена: {slot} — {booking['user_name']}")
+            send(booking["user_id"], f"❌ <b>Твоя запись на {slot} отменена администратором</b>")
+        return
+    # =====================================
     
     # Инфо
     if data == "services":
@@ -208,7 +273,7 @@ def handle_callback(chat_id, data):
             send(chat_id, f"❌ Время {slot_time} уже занято")
             return
         
-        name = f"Клиент"  # имя берем из БД если нужно
+        name = f"Клиент"
         if db.add_booking(full_slot, chat_id, name, "", sid):
             temp.pop(chat_id, None)
             send(chat_id, f"✅ Запись подтверждена!\n\n📅 {full_slot}\n💅 {service['name']}\n💰 {service['price']} грн")
@@ -226,7 +291,6 @@ def handle_callback(chat_id, data):
             send(chat_id, "⏰ Отменить можно за 2 часа до начала")
         elif db.cancel_booking(slot, user_id=chat_id):
             send(chat_id, f"✅ Запись на {slot} отменена")
-
 
 # ========== ЗАПУСК ==========
 
